@@ -29,26 +29,31 @@ public class OutputComparator {
     }
 
     public ComparisonResult compare(String primaryBody, String candidateBody) {
-        Optional<JsonNode> primaryJson = parseJson(primaryBody);
-        Optional<JsonNode> candidateJson = parseJson(candidateBody);
+        try {
+            Optional<JsonNode> primaryJson = parseJson(primaryBody);
+            Optional<JsonNode> candidateJson = parseJson(candidateBody);
 
-        boolean bothValidJson = primaryJson.isPresent() && candidateJson.isPresent();
-        if (!bothValidJson) {
+            boolean bothValidJson = primaryJson.isPresent() && candidateJson.isPresent();
+            if (!bothValidJson) {
+                return new ComparisonResult(false, false, null, null);
+            }
+
+            Optional<String> primaryAction = extractAction(primaryJson.get());
+            Optional<String> candidateAction = extractAction(candidateJson.get());
+
+            boolean exactActionMatch = primaryAction.isPresent()
+                    && candidateAction.isPresent()
+                    && primaryAction.get().equals(candidateAction.get());
+
+            return new ComparisonResult(
+                    true,
+                    exactActionMatch,
+                    primaryAction.orElse(null),
+                    candidateAction.orElse(null));
+        } catch (Exception ignored) {
+            // Comparison must never break the shadow path.
             return new ComparisonResult(false, false, null, null);
         }
-
-        Optional<String> primaryAction = extractAction(primaryJson.get());
-        Optional<String> candidateAction = extractAction(candidateJson.get());
-
-        boolean exactActionMatch = primaryAction.isPresent()
-                && candidateAction.isPresent()
-                && primaryAction.get().equals(candidateAction.get());
-
-        return new ComparisonResult(
-                true,
-                exactActionMatch,
-                primaryAction.orElse(null),
-                candidateAction.orElse(null));
     }
 
     private Optional<JsonNode> parseJson(String body) {
@@ -60,6 +65,8 @@ public class OutputComparator {
             return Optional.of(objectMapper.readTree(body));
         } catch (JacksonException ignored) {
             // Heuristic #1 failed: body is not valid JSON.
+            return Optional.empty();
+        } catch (Exception ignored) {
             return Optional.empty();
         }
     }

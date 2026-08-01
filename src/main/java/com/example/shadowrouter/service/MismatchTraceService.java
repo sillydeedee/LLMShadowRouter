@@ -66,32 +66,40 @@ public class MismatchTraceService {
             String primaryAction,
             String candidateAction) {
 
-        final String payloadJson;
         try {
-            payloadJson = objectMapper.writeValueAsString(requestPayload);
-        } catch (JsonProcessingException exception) {
-            log.warn("requestId={} failed to serialize request payload for trace: {}",
-                    requestId, exception.toString());
-            return;
-        }
+            final String payloadJson;
+            try {
+                payloadJson = objectMapper.writeValueAsString(requestPayload);
+            } catch (JsonProcessingException exception) {
+                log.warn("requestId={} failed to serialize request payload for trace: {}",
+                        requestId, exception.toString());
+                return;
+            }
 
-        MismatchTrace trace = new MismatchTrace(
-                null,
-                requestId,
-                Instant.now(),
-                payloadJson,
-                primaryBody,
-                candidateBody,
-                primaryAction,
-                candidateAction);
+            MismatchTrace trace = new MismatchTrace(
+                    null,
+                    requestId,
+                    Instant.now(),
+                    payloadJson,
+                    primaryBody,
+                    candidateBody,
+                    primaryAction,
+                    candidateAction);
 
-        try {
-            writeExecutor.execute(() -> persist(trace));
-        } catch (RejectedExecutionException rejected) {
-            metrics.recordMismatchTraceShed();
+            try {
+                writeExecutor.execute(() -> persist(trace));
+            } catch (RejectedExecutionException rejected) {
+                metrics.recordMismatchTraceShed();
+                log.warn(
+                        "requestId={} mismatch trace shed (sqlite write queue saturated)",
+                        requestId);
+            }
+        } catch (Exception exception) {
+            metrics.recordMismatchTraceError();
             log.warn(
-                    "requestId={} mismatch trace shed (sqlite write queue saturated)",
-                    requestId);
+                    "requestId={} unexpected failure recording mismatch trace: {}",
+                    requestId,
+                    exception.toString());
         }
     }
 
@@ -100,6 +108,8 @@ public class MismatchTraceService {
             return repository.findRecent(limit);
         } catch (SQLException exception) {
             throw new IllegalStateException("failed to read mismatch traces", exception);
+        } catch (Exception exception) {
+            throw new IllegalStateException("unexpected failure reading mismatch traces", exception);
         }
     }
 
@@ -118,6 +128,12 @@ public class MismatchTraceService {
                     "requestId={} failed to persist mismatch trace: {}",
                     trace.requestId(),
                     exception.toString());
+        } catch (Exception exception) {
+            metrics.recordMismatchTraceError();
+            log.warn(
+                    "requestId={} unexpected failure persisting mismatch trace: {}",
+                    trace.requestId(),
+                    exception.toString());
         }
     }
 
@@ -130,6 +146,9 @@ public class MismatchTraceService {
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+            writeExecutor.shutdownNow();
+        } catch (Exception exception) {
+            log.warn("unexpected failure shutting down mismatch trace writer: {}", exception.toString());
             writeExecutor.shutdownNow();
         }
     }

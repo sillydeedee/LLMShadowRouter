@@ -6,6 +6,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import com.example.shadowrouter.config.RuntimeShadowProperties;
 import com.example.shadowrouter.exception.InvalidConfigException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -16,6 +18,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class ShadowRoutingConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(ShadowRoutingConfig.class);
 
     private final AtomicInteger shadowRoutingPercentage;
 
@@ -34,16 +38,24 @@ public class ShadowRoutingConfig {
 
     /**
      * Probabilistic gate used by {@link ChatService} before offering shadow work.
+     * On unexpected failure, returns {@code false} so the primary path stays unaffected.
      */
     public boolean shouldMirrorRequest() {
-        int percentage = shadowRoutingPercentage.get();
-        if (percentage >= 100) {
-            return true;
-        }
-        if (percentage <= 0) {
+        try {
+            int percentage = shadowRoutingPercentage.get();
+            if (percentage >= 100) {
+                return true;
+            }
+            if (percentage <= 0) {
+                return false;
+            }
+            return ThreadLocalRandom.current().nextInt(100) < percentage;
+        } catch (Exception exception) {
+            log.warn(
+                    "unexpected failure evaluating shadow routing percentage; skipping mirror: {}",
+                    exception.toString());
             return false;
         }
-        return ThreadLocalRandom.current().nextInt(100) < percentage;
     }
 
     private static int validatePercentage(int percentage) {

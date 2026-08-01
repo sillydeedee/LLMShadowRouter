@@ -80,6 +80,12 @@ public class ShadowEvaluationService {
                     properties.shadowMaxConcurrency(),
                     properties.shadowQueueCapacity());
             return false;
+        } catch (Exception exception) {
+            log.warn(
+                    "requestId={} unexpected failure offering shadow evaluation; skipping: {}",
+                    requestId,
+                    exception.toString());
+            return false;
         }
     }
 
@@ -91,57 +97,65 @@ public class ShadowEvaluationService {
             ObjectNode payload,
             CompletableFuture<InferenceResult> primaryResultFuture) {
 
-        long startNanos = System.nanoTime();
-        InferenceResult candidateResult;
-
         try {
-            candidateResult = callCandidateModel(payload);
-            log.info(
-                    "requestId={} candidate model={} status={} latencyMs={}",
-                    requestId,
-                    properties.candidateModel(),
-                    candidateResult.statusCode(),
-                    elapsedMs(startNanos));
-        } catch (CandidateInferenceException exception) {
-            metrics.recordShadowErrorOrTimeout();
-            log.warn(
-                    "requestId={} candidate model={} failed after {}ms: {}",
-                    requestId,
-                    properties.candidateModel(),
-                    elapsedMs(startNanos),
-                    exception.toString());
-            return;
-        }
+            long startNanos = System.nanoTime();
+            InferenceResult candidateResult;
 
-        InferenceResult primaryResult = awaitPrimaryResult(requestId, primaryResultFuture);
-        if (primaryResult == null) {
-            return;
-        }
+            try {
+                candidateResult = callCandidateModel(payload);
+                log.info(
+                        "requestId={} candidate model={} status={} latencyMs={}",
+                        requestId,
+                        properties.candidateModel(),
+                        candidateResult.statusCode(),
+                        elapsedMs(startNanos));
+            } catch (CandidateInferenceException exception) {
+                metrics.recordShadowErrorOrTimeout();
+                log.warn(
+                        "requestId={} candidate model={} failed after {}ms: {}",
+                        requestId,
+                        properties.candidateModel(),
+                        elapsedMs(startNanos),
+                        exception.toString());
+                return;
+            }
 
-        ComparisonResult comparison = outputComparator.compare(
-                primaryResult.body(),
-                candidateResult.body());
+            InferenceResult primaryResult = awaitPrimaryResult(requestId, primaryResultFuture);
+            if (primaryResult == null) {
+                return;
+            }
 
-        metrics.recordComparison(comparison.exactActionMatch());
-
-        if (!comparison.exactActionMatch()) {
-            // Persist asynchronously for debugging / visualization; never blocks chat.
-            mismatchTraceService.recordMismatchAsync(
-                    requestId,
-                    payload,
+            ComparisonResult comparison = outputComparator.compare(
                     primaryResult.body(),
-                    candidateResult.body(),
+                    candidateResult.body());
+
+            metrics.recordComparison(comparison.exactActionMatch());
+
+            if (!comparison.exactActionMatch()) {
+                // Persist asynchronously for debugging / visualization; never blocks chat.
+                mismatchTraceService.recordMismatchAsync(
+                        requestId,
+                        payload,
+                        primaryResult.body(),
+                        candidateResult.body(),
+                        comparison.primaryAction(),
+                        comparison.candidateAction());
+            }
+
+            log.info(
+                    "requestId={} comparison bothValidJson={} exactActionMatch={} primaryAction={} candidateAction={}",
+                    requestId,
+                    comparison.bothValidJson(),
+                    comparison.exactActionMatch(),
                     comparison.primaryAction(),
                     comparison.candidateAction());
+        } catch (Exception exception) {
+            metrics.recordShadowErrorOrTimeout();
+            log.warn(
+                    "requestId={} unexpected failure during shadow evaluation: {}",
+                    requestId,
+                    exception.toString());
         }
-
-        log.info(
-                "requestId={} comparison bothValidJson={} exactActionMatch={} primaryAction={} candidateAction={}",
-                requestId,
-                comparison.bothValidJson(),
-                comparison.exactActionMatch(),
-                comparison.primaryAction(),
-                comparison.candidateAction());
     }
 
     private InferenceResult callCandidateModel(ObjectNode payload) throws CandidateInferenceException {
@@ -157,6 +171,8 @@ public class ShadowEvaluationService {
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw CandidateInferenceException.from(interrupted);
+        } catch (Exception exception) {
+            throw CandidateInferenceException.from(exception);
         }
     }
 
@@ -174,6 +190,12 @@ public class ShadowEvaluationService {
                     "requestId={} skipping comparison; {}",
                     requestId,
                     unavailable.toString());
+            return null;
+        } catch (Exception exception) {
+            log.warn(
+                    "requestId={} unexpected failure waiting for primary result: {}",
+                    requestId,
+                    exception.toString());
             return null;
         }
     }

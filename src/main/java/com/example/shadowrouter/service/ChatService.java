@@ -120,7 +120,7 @@ public class ChatService {
                     requestId,
                     payload.deepCopy(),
                     primaryResultFuture);
-        } catch (RuntimeException exception) {
+        } catch (Exception exception) {
             ShadowOfferFailedException offerFailed = new ShadowOfferFailedException(
                     "unexpected failure offering shadow evaluation",
                     exception);
