@@ -31,4 +31,8 @@ public class PrimaryInferenceException extends Exception {
     public static PrimaryInferenceException interrupted(InterruptedException cause) {
         return new PrimaryInferenceException("primary model call was interrupted", cause);
     }
+
+    public static PrimaryInferenceException unexpected(Exception cause) {
+        return new PrimaryInferenceException("primary model call failed unexpectedly", cause);
+    }
 }

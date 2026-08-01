@@ -91,6 +91,9 @@ public class ChatService {
             Thread.currentThread().interrupt();
             failPrimary(shadowAccepted, primaryResultFuture, interrupted);
             throw PrimaryInferenceException.interrupted(interrupted);
+        } catch (Exception exception) {
+            failPrimary(shadowAccepted, primaryResultFuture, exception);
+            throw PrimaryInferenceException.unexpected(exception);
         }
     }
 
