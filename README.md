@@ -173,44 +173,158 @@ The multi-stage `Dockerfile` builds the Spring Boot jar with Maven, then runs it
 on a slim Eclipse Temurin 21 JRE image. Mismatch traces are written to
 `/app/data/shadow-mismatches.db` inside the container (`SHADOW_SQLITE_PATH`).
 
-## Try it
+## Step-by-step: curl usage (mutate config & observe metrics)
+
+Assume the service is running on `http://localhost:8080` and `DO_MODEL_ACCESS_KEY` is set.
+
+### 1. Baseline metrics (should start near zeros)
+
+```bash
+curl -s http://localhost:8080/metrics | jq
+```
+
+### 2. Send a chat request (primary answers; shadow may run in background)
 
 ```bash
 curl -s http://localhost:8080/v1/chat \
   -H "Content-Type: application/json" \
   -d '{
     "messages": [
-      {"role": "user", "content": "Say hello in one sentence."}
+      {"role": "user", "content": "Reply with JSON only: {\"action\":\"retry\"}"}
     ],
     "max_tokens": 64
-  }'
+  }' | jq
 ```
 
-The response is the primary model's chat completion, passed through as-is.
+The HTTP response is the **primary** model body only (`X-Request-Id` is set for log correlation).
+
+### 3. Re-check metrics (counters should move)
 
 ```bash
-# Throttle shadow mirroring to 50% of traffic
-curl -s -X PUT http://localhost:8080/config \
-  -H "Content-Type: application/json" \
-  -d '{"shadowRoutingPercentage": 50}'
-
-curl -s http://localhost:8080/config
-curl -s http://localhost:8080/traces?limit=20
-curl -s http://localhost:8080/metrics
+curl -s http://localhost:8080/metrics | jq
 ```
 
-Example metrics payload:
+Expect `totalRequestsProcessed` to increase. After the shadow path finishes, also watch:
+
+- `comparisonsEvaluated`
+- `exactActionMatches` / `exactMatchRatePercentage`
+- `shadowErrorsOrTimeouts` (if candidate failed)
+- `mismatchTracesPersisted` (if actions differed)
+
+Example shape:
 
 ```json
 {
-  "totalRequestsProcessed": 42,
-  "shadowErrorsOrTimeouts": 3,
-  "shadowEvaluationsShed": 5,
-  "comparisonsEvaluated": 34,
-  "exactActionMatches": 28,
-  "exactMatchRatePercentage": 82.4
+  "totalRequestsProcessed": 1,
+  "shadowErrorsOrTimeouts": 0,
+  "shadowEvaluationsShed": 0,
+  "shadowRoutingSkipped": 0,
+  "comparisonsEvaluated": 1,
+  "exactActionMatches": 1,
+  "exactMatchRatePercentage": 100.0,
+  "mismatchTracesPersisted": 0,
+  "mismatchTracesShed": 0,
+  "mismatchTraceErrors": 0
 }
 ```
+
+### 4. Throttle shadow mirroring to 50% (runtime config)
+
+```bash
+curl -s -X PUT http://localhost:8080/config \
+  -H "Content-Type: application/json" \
+  -d '{"shadowRoutingPercentage": 50}' | jq
+```
+
+Confirm:
+
+```bash
+curl -s http://localhost:8080/config | jq
+# {"shadowRoutingPercentage":50}
+```
+
+### 5. Generate more traffic and watch skip / shed counters
+
+```bash
+for i in $(seq 1 10); do
+  curl -s http://localhost:8080/v1/chat \
+    -H "Content-Type: application/json" \
+    -d "{\"messages\":[{\"role\":\"user\",\"content\":\"ping $i — reply {\\\"action\\\":\\\"continue\\\"}\"}]}" \
+    > /dev/null
+done
+
+curl -s http://localhost:8080/metrics | jq
+```
+
+With percentage `50`, roughly half of requests should increment `shadowRoutingSkipped`
+(no candidate call). Under heavy load, `shadowEvaluationsShed` rises when the bounded
+shadow queue is full.
+
+### 6. Inspect mismatch traces (debugging / visualization)
+
+```bash
+curl -s "http://localhost:8080/traces?limit=20" | jq
+```
+
+Each row includes `requestId`, request payload, primary/candidate bodies, and extracted
+`action` values when a comparison was not an exact match.
+
+### 7. Restore full mirroring
+
+```bash
+curl -s -X PUT http://localhost:8080/config \
+  -H "Content-Type: application/json" \
+  -d '{"shadowRoutingPercentage": 100}' | jq
+```
+
+Invalid values are rejected:
+
+```bash
+curl -s -X PUT http://localhost:8080/config \
+  -H "Content-Type: application/json" \
+  -d '{"shadowRoutingPercentage": 150}'
+# {"error":"shadowRoutingPercentage must be between 0 and 100 ..."}  (or validation message)
+```
+
+## How memory footprint is bounded under load
+
+This service is designed so a traffic burst cannot grow unbounded background work or
+payload retention. Memory is capped by **fixed-size queues**, **concurrency limits**,
+and **probabilistic sampling**.
+
+| Boundary | Default | What it limits |
+|---|---|---|
+| Shadow executor concurrency | `SHADOW_MAX_CONCURRENCY=32` | Max in-flight candidate HTTP calls (+ held payloads) |
+| Shadow work queue | `SHADOW_QUEUE_CAPACITY=128` | Max pending shadow tasks waiting for a worker |
+| Shadow offer policy | `AbortPolicy` (shed) | When workers + queue are full, new shadow work is **dropped** |
+| Routing percentage | `PUT /config` / `SHADOW_ROUTING_PERCENTAGE` | Fraction of requests that even attempt mirroring |
+| Mismatch SQLite write queue | 256 | Max pending disk writes for mismatch traces |
+| Trace write policy | `AbortPolicy` (shed) | Extra mismatches are dropped if the write queue is saturated |
+
+**What this means in practice**
+
+1. **Primary path stays lean.** `/v1/chat` awaits only the primary model. Candidate work
+   never blocks the response, so client concurrency is not multiplied by shadow latency.
+2. **Shadow queue cannot grow without limit.** At most
+   `concurrency + queueCapacity` shadow payloads are retained in memory. Further offers
+   increment `shadowEvaluationsShed` and free the request thread immediately.
+3. **Routing % reduces admission.** At `50`, about half of requests never allocate a
+   shadow deep-copy or queue slot (`shadowRoutingSkipped`).
+4. **Mismatch persistence is decoupled and bounded.** SQLite inserts run on a separate
+   single-threaded queue. Shadow workers enqueue and continue; if that queue is full,
+   the trace is shed (`mismatchTracesShed`) instead of buffering forever.
+5. **Metrics are fixed-size counters.** `ShadowMetrics` uses `AtomicLong`s — O(1) memory
+   regardless of traffic volume.
+
+Rough upper bound for in-flight shadow memory (order of magnitude):
+
+```text
+shadow_held ≈ (SHADOW_MAX_CONCURRENCY + SHADOW_QUEUE_CAPACITY) × avg_payload_size
+            + mismatch_write_queue(≤256) × avg_trace_size
+```
+
+Tune `SHADOW_MAX_CONCURRENCY` / `SHADOW_QUEUE_CAPACITY` / `shadowRoutingPercentage`
+down under memory pressure; the chat endpoint continues serving primary traffic.
 
 ## How it works
 
