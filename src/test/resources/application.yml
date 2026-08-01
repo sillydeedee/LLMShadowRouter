@@ -1,0 +1,9 @@
+inference:
+  base-url: http://localhost:9
+  access-key: test-access-key
+  primary-model: primary-test-model
+  candidate-model: candidate-test-model
+  primary-timeout: 5s
+  candidate-timeout: 5s
+  shadow-max-concurrency: 8
+  shadow-queue-capacity: 16

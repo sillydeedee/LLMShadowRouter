@@ -1,0 +1,16 @@
+.git
+.github
+.idea
+.vscode
+*.iml
+.env
+.env.*
+!.env.example
+target
+**/target
+README.md
+.gitignore
+.gitattributes
+*.md
+.cursor
+agent-transcripts
