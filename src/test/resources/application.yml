@@ -7,3 +7,7 @@ inference:
   candidate-timeout: 5s
   shadow-max-concurrency: 8
   shadow-queue-capacity: 16
+
+shadow:
+  routing-percentage: 100
+  sqlite-path: ./target/test-data/shadow-mismatches.db

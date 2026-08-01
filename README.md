@@ -8,6 +8,10 @@ A Spring Boot service that implements the **shadow deployment** pattern for LLMs
   calls a **candidate** model, compares outputs, and updates metrics.
 - Under heavy traffic, when the shadow pool is saturated, background evaluations
   are **load-shed** (dropped) so memory and the primary request path stay healthy.
+- Mismatched primary/candidate outputs are written asynchronously to a local
+  **SQLite** file for debugging (`GET /traces`).
+- Shadow mirror rate is runtime-tunable via **`PUT /config`**
+  (`shadowRoutingPercentage`, e.g. `100` → `50`).
 
 ## Architecture
 
@@ -43,13 +47,15 @@ A Spring Boot service that implements the **shadow deployment** pattern for LLMs
                                   \          |        |
                                    \         v        v
                                     \   ShadowMetrics <--- compare (action match)
+                                     \                     |
+                                      \                    +--> SQLite mismatches (async)
 ```
 
 **Sync path (immediate return):**  
 `Client` → `ChatController` → `ChatService.completeChat` → primary LLM → response to client.
 
 **Decoupled background path:**  
-`ChatService` offers work to `ShadowEvaluationService` → bounded queue/pool → candidate LLM → `OutputComparator` → `ShadowMetrics`.
+`ChatService` (routing %) → `ShadowEvaluationService` → bounded queue/pool → candidate LLM → compare → metrics; mismatches → SQLite.
 
 **Load shedding:** when concurrency + queue are full, the shadow task is dropped; the chat response is unchanged.
 
@@ -124,6 +130,8 @@ All settings come from environment variables (see `.env.example`):
 | `CANDIDATE_TIMEOUT` | `90s` | Timeout for the background shadow call |
 | `SHADOW_MAX_CONCURRENCY` | `32` | Max concurrent background shadow evaluations |
 | `SHADOW_QUEUE_CAPACITY` | `128` | Max queued shadow tasks before shedding |
+| `SHADOW_ROUTING_PERCENTAGE` | `100` | Initial % of requests mirrored to candidate |
+| `SHADOW_SQLITE_PATH` | `./data/shadow-mismatches.db` | SQLite file for mismatch traces |
 
 ## Run locally
 
@@ -141,13 +149,14 @@ Build a portable image (Java/Maven not required on the host):
 docker build -t llm-shadow-router .
 ```
 
-Run it (pass your model access key and optional overrides):
+Run it (pass your model access key and mount a volume for SQLite traces):
 
 ```bash
 docker run --rm -p 8080:8080 \
   -e DO_MODEL_ACCESS_KEY="your-model-access-key-here" \
   -e PRIMARY_MODEL="llama3.3-70b-instruct" \
   -e CANDIDATE_MODEL="openai-gpt-oss-120b" \
+  -v llm-shadow-data:/app/data \
   llm-shadow-router
 ```
 
@@ -155,10 +164,14 @@ Or load variables from a `.env` file:
 
 ```bash
 cp .env.example .env   # fill in DO_MODEL_ACCESS_KEY
-docker run --rm -p 8080:8080 --env-file .env llm-shadow-router
+docker run --rm -p 8080:8080 --env-file .env \
+  -v llm-shadow-data:/app/data \
+  llm-shadow-router
 ```
 
-The multi-stage `Dockerfile` builds the Spring Boot jar with Maven, then runs it on a slim Eclipse Temurin 21 JRE image.
+The multi-stage `Dockerfile` builds the Spring Boot jar with Maven, then runs it
+on a slim Eclipse Temurin 21 JRE image. Mismatch traces are written to
+`/app/data/shadow-mismatches.db` inside the container (`SHADOW_SQLITE_PATH`).
 
 ## Try it
 
@@ -176,6 +189,13 @@ curl -s http://localhost:8080/v1/chat \
 The response is the primary model's chat completion, passed through as-is.
 
 ```bash
+# Throttle shadow mirroring to 50% of traffic
+curl -s -X PUT http://localhost:8080/config \
+  -H "Content-Type: application/json" \
+  -d '{"shadowRoutingPercentage": 50}'
+
+curl -s http://localhost:8080/config
+curl -s http://localhost:8080/traces?limit=20
 curl -s http://localhost:8080/metrics
 ```
 
@@ -195,11 +215,13 @@ Example metrics payload:
 ## How it works
 
 - `ChatService` owns the user response: primary inference only.
+- Before offering shadow work, it applies `shadowRoutingPercentage` (runtime config).
 - `ShadowEvaluationService` owns candidate inference, comparison, and load shedding.
 - Shadow work uses a `ThreadPoolExecutor` with fixed concurrency and a fixed-size
   `ArrayBlockingQueue`. Overflow uses `AbortPolicy` → task dropped.
-- Dropped evaluations increment `shadowEvaluationsShed` and never block `/v1/chat`.
-- Accepted shadow tasks compare primary vs candidate (`action` exact match) and
-  update match-rate metrics.
+- When `action` values differ (or either side lacks a matchable action), the request
+  payload plus both model bodies are queued to SQLite via `MismatchTraceService`.
+- `PUT /config` updates mirroring percentage without restart; `GET /traces` reads
+  recent mismatches for debugging/visualization.
 - Any `model` field in the incoming payload is overridden per call so both models
   receive the identical prompt.

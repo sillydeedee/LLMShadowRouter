@@ -37,6 +37,7 @@ public class ShadowEvaluationService {
     private final InferenceClient inferenceClient;
     private final InferenceProperties properties;
     private final OutputComparator outputComparator;
+    private final MismatchTraceService mismatchTraceService;
     private final ShadowMetrics metrics;
     private final ExecutorService shadowExecutor;
 
@@ -44,11 +45,13 @@ public class ShadowEvaluationService {
             InferenceClient inferenceClient,
             InferenceProperties properties,
             OutputComparator outputComparator,
+            MismatchTraceService mismatchTraceService,
             ShadowMetrics metrics,
             @Qualifier(ShadowExecutorConfig.SHADOW_EXECUTOR) ExecutorService shadowExecutor) {
         this.inferenceClient = inferenceClient;
         this.properties = properties;
         this.outputComparator = outputComparator;
+        this.mismatchTraceService = mismatchTraceService;
         this.metrics = metrics;
         this.shadowExecutor = shadowExecutor;
     }
@@ -120,6 +123,17 @@ public class ShadowEvaluationService {
                 candidateResult.body());
 
         metrics.recordComparison(comparison.exactActionMatch());
+
+        if (!comparison.exactActionMatch()) {
+            // Persist asynchronously for debugging / visualization; never blocks chat.
+            mismatchTraceService.recordMismatchAsync(
+                    requestId,
+                    payload,
+                    primaryResult.body(),
+                    candidateResult.body(),
+                    comparison.primaryAction(),
+                    comparison.candidateAction());
+        }
 
         log.info(
                 "requestId={} comparison bothValidJson={} exactActionMatch={} primaryAction={} candidateAction={}",

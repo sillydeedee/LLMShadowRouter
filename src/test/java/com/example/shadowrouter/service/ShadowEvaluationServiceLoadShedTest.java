@@ -72,10 +72,12 @@ class ShadowEvaluationServiceLoadShedTest {
                 1);
 
         ShadowMetrics metrics = new ShadowMetrics();
+        MismatchTraceService mismatchTraceService = mock(MismatchTraceService.class);
         ShadowEvaluationService shadowEvaluationService = new ShadowEvaluationService(
                 inferenceClient,
                 properties,
                 new OutputComparator(new ObjectMapper()),
+                mismatchTraceService,
                 metrics,
                 shadowExecutor);
 

@@ -19,8 +19,8 @@ import org.springframework.stereotype.Service;
 /**
  * Handles the user-facing chat path: call the primary model and return its response.
  *
- * After kicking off background candidate evaluation (non-blocking offer), this
- * service waits only on the primary inference call.
+ * After optionally kicking off background candidate evaluation (non-blocking offer),
+ * this service waits only on the primary inference call.
  */
 @Service
 public class ChatService {
@@ -30,24 +30,27 @@ public class ChatService {
     private final InferenceClient inferenceClient;
     private final InferenceProperties properties;
     private final ShadowEvaluationService shadowEvaluationService;
+    private final ShadowRoutingConfig shadowRoutingConfig;
     private final ShadowMetrics metrics;
 
     public ChatService(
             InferenceClient inferenceClient,
             InferenceProperties properties,
             ShadowEvaluationService shadowEvaluationService,
+            ShadowRoutingConfig shadowRoutingConfig,
             ShadowMetrics metrics) {
         this.inferenceClient = inferenceClient;
         this.properties = properties;
         this.shadowEvaluationService = shadowEvaluationService;
+        this.shadowRoutingConfig = shadowRoutingConfig;
         this.metrics = metrics;
     }
 
     /**
      * Completes a chat request for the caller using the primary model.
      *
-     * Also offers the same payload to {@link ShadowEvaluationService} for
-     * asynchronous candidate evaluation. That offer never blocks the response.
+     * Also may offer the same payload to {@link ShadowEvaluationService} for
+     * asynchronous candidate evaluation, subject to the runtime routing percentage.
      */
     public InferenceResult completeChat(String requestId, ObjectNode payload)
             throws PrimaryInferenceException {
@@ -93,12 +96,21 @@ public class ChatService {
 
     /**
      * Shadow offer must never fail the user-facing primary call.
-     * Load shedding is handled inside {@link ShadowEvaluationService#submitEvaluation}.
+     * Applies runtime routing percentage first, then bounded-executor load shedding.
      */
     private boolean offerShadowEvaluation(
             String requestId,
             ObjectNode payload,
             CompletableFuture<InferenceResult> primaryResultFuture) {
+
+        if (!shadowRoutingConfig.shouldMirrorRequest()) {
+            metrics.recordShadowRoutingSkipped();
+            log.debug(
+                    "requestId={} shadow mirroring skipped (routingPercentage={})",
+                    requestId,
+                    shadowRoutingConfig.getShadowRoutingPercentage());
+            return false;
+        }
 
         try {
             return shadowEvaluationService.submitEvaluation(

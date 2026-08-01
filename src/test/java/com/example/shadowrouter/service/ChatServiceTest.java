@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -37,6 +38,9 @@ class ChatServiceTest {
     @Mock
     private ShadowEvaluationService shadowEvaluationService;
 
+    @Mock
+    private ShadowRoutingConfig shadowRoutingConfig;
+
     private ShadowMetrics metrics;
     private ChatService chatService;
 
@@ -52,7 +56,12 @@ class ChatServiceTest {
                 Duration.ofSeconds(5),
                 4,
                 8);
-        chatService = new ChatService(inferenceClient, properties, shadowEvaluationService, metrics);
+        chatService = new ChatService(
+                inferenceClient,
+                properties,
+                shadowEvaluationService,
+                shadowRoutingConfig,
+                metrics);
     }
 
     @Test
@@ -60,6 +69,7 @@ class ChatServiceTest {
         ObjectNode payload = TestPayloads.chatPayload("hello");
         InferenceResult primary = new InferenceResult(200, "{\"answer\":1}");
 
+        when(shadowRoutingConfig.shouldMirrorRequest()).thenReturn(true);
         AtomicReference<CompletableFuture<InferenceResult>> capturedFuture = new AtomicReference<>();
         when(shadowEvaluationService.submitEvaluation(eq("req-1"), any(), any()))
                 .thenAnswer(invocation -> {
@@ -86,6 +96,7 @@ class ChatServiceTest {
         ObjectNode payload = TestPayloads.chatPayload("hello");
         AtomicReference<CompletableFuture<InferenceResult>> capturedFuture = new AtomicReference<>();
 
+        when(shadowRoutingConfig.shouldMirrorRequest()).thenReturn(true);
         when(shadowEvaluationService.submitEvaluation(eq("req-2"), any(), any()))
                 .thenAnswer(invocation -> {
                     capturedFuture.set(invocation.getArgument(2));
@@ -108,6 +119,7 @@ class ChatServiceTest {
         ObjectNode payload = TestPayloads.chatPayload("hello");
         InferenceResult primary = new InferenceResult(200, "{\"ok\":true}");
 
+        when(shadowRoutingConfig.shouldMirrorRequest()).thenReturn(true);
         when(shadowEvaluationService.submitEvaluation(eq("req-3"), any(), any())).thenReturn(false);
         when(inferenceClient.chatCompletion(any(), eq("primary-model"), any())).thenReturn(primary);
 
@@ -115,5 +127,21 @@ class ChatServiceTest {
 
         assertEquals(primary, result);
         assertEquals(1, metrics.snapshot().totalRequestsProcessed());
+    }
+
+    @Test
+    void completeChatSkipsShadowWhenRoutingPercentageExcludesRequest() throws Exception {
+        ObjectNode payload = TestPayloads.chatPayload("hello");
+        InferenceResult primary = new InferenceResult(200, "{\"ok\":true}");
+
+        when(shadowRoutingConfig.shouldMirrorRequest()).thenReturn(false);
+        when(shadowRoutingConfig.getShadowRoutingPercentage()).thenReturn(0);
+        when(inferenceClient.chatCompletion(any(), eq("primary-model"), any())).thenReturn(primary);
+
+        InferenceResult result = chatService.completeChat("req-4", payload);
+
+        assertEquals(primary, result);
+        assertEquals(1, metrics.snapshot().shadowRoutingSkipped());
+        verify(shadowEvaluationService, never()).submitEvaluation(any(), any(), any());
     }
 }

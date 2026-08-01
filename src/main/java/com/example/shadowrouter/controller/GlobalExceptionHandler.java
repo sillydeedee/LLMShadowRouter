@@ -1,6 +1,7 @@
 package com.example.shadowrouter.controller;
 
 import com.example.shadowrouter.exception.InvalidChatPayloadException;
+import com.example.shadowrouter.exception.InvalidConfigException;
 import com.example.shadowrouter.exception.PrimaryInferenceException;
 
 import org.slf4j.Logger;
@@ -8,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -25,6 +27,20 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(InvalidChatPayloadException.class)
     public ResponseEntity<String> handleInvalidPayload(InvalidChatPayloadException exception) {
         return jsonError(HttpStatus.BAD_REQUEST, exception.getMessage());
+    }
+
+    @ExceptionHandler(InvalidConfigException.class)
+    public ResponseEntity<String> handleInvalidConfig(InvalidConfigException exception) {
+        return jsonError(HttpStatus.BAD_REQUEST, exception.getMessage());
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<String> handleValidationFailure(MethodArgumentNotValidException exception) {
+        String message = exception.getBindingResult().getFieldErrors().stream()
+                .findFirst()
+                .map(error -> error.getField() + " " + error.getDefaultMessage())
+                .orElse("invalid request body");
+        return jsonError(HttpStatus.BAD_REQUEST, message);
     }
 
     @ExceptionHandler(PrimaryInferenceException.class)

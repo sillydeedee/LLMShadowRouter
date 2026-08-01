@@ -13,8 +13,12 @@ public class ShadowMetrics {
     private final AtomicLong totalRequestsProcessed = new AtomicLong();
     private final AtomicLong shadowErrorsOrTimeouts = new AtomicLong();
     private final AtomicLong shadowEvaluationsShed = new AtomicLong();
+    private final AtomicLong shadowRoutingSkipped = new AtomicLong();
     private final AtomicLong comparisonsEvaluated = new AtomicLong();
     private final AtomicLong exactActionMatches = new AtomicLong();
+    private final AtomicLong mismatchTracesPersisted = new AtomicLong();
+    private final AtomicLong mismatchTracesShed = new AtomicLong();
+    private final AtomicLong mismatchTraceErrors = new AtomicLong();
 
     /** Increments once per {@code /v1/chat} attempt (success or primary failure). */
     public void recordRequestProcessed() {
@@ -34,6 +38,11 @@ public class ShadowMetrics {
         shadowEvaluationsShed.incrementAndGet();
     }
 
+    /** Increments when a request is not mirrored due to routing percentage. */
+    public void recordShadowRoutingSkipped() {
+        shadowRoutingSkipped.incrementAndGet();
+    }
+
     /**
      * Records one completed primary-vs-candidate comparison.
      *
@@ -44,6 +53,18 @@ public class ShadowMetrics {
         if (exactActionMatch) {
             exactActionMatches.incrementAndGet();
         }
+    }
+
+    public void recordMismatchTracePersisted() {
+        mismatchTracesPersisted.incrementAndGet();
+    }
+
+    public void recordMismatchTraceShed() {
+        mismatchTracesShed.incrementAndGet();
+    }
+
+    public void recordMismatchTraceError() {
+        mismatchTraceErrors.incrementAndGet();
     }
 
     /** Point-in-time view of all counters, including computed match rate. */
@@ -59,9 +80,13 @@ public class ShadowMetrics {
                 totalRequestsProcessed.get(),
                 shadowErrorsOrTimeouts.get(),
                 shadowEvaluationsShed.get(),
+                shadowRoutingSkipped.get(),
                 evaluated,
                 matches,
-                roundOneDecimal(exactMatchRatePercentage));
+                roundOneDecimal(exactMatchRatePercentage),
+                mismatchTracesPersisted.get(),
+                mismatchTracesShed.get(),
+                mismatchTraceErrors.get());
     }
 
     private static double roundOneDecimal(double value) {
@@ -72,8 +97,12 @@ public class ShadowMetrics {
             long totalRequestsProcessed,
             long shadowErrorsOrTimeouts,
             long shadowEvaluationsShed,
+            long shadowRoutingSkipped,
             long comparisonsEvaluated,
             long exactActionMatches,
-            double exactMatchRatePercentage) {
+            double exactMatchRatePercentage,
+            long mismatchTracesPersisted,
+            long mismatchTracesShed,
+            long mismatchTraceErrors) {
     }
 }

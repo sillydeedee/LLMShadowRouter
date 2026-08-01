@@ -15,15 +15,19 @@ class ShadowMetricsTest {
         metrics.recordRequestProcessed();
         metrics.recordShadowErrorOrTimeout();
         metrics.recordShadowEvaluationShed();
+        metrics.recordShadowRoutingSkipped();
         metrics.recordComparison(true);
         metrics.recordComparison(false);
+        metrics.recordMismatchTracePersisted();
 
         ShadowMetrics.MetricsSnapshot snapshot = metrics.snapshot();
         assertEquals(1, snapshot.totalRequestsProcessed());
         assertEquals(1, snapshot.shadowErrorsOrTimeouts());
         assertEquals(1, snapshot.shadowEvaluationsShed());
+        assertEquals(1, snapshot.shadowRoutingSkipped());
         assertEquals(2, snapshot.comparisonsEvaluated());
         assertEquals(1, snapshot.exactActionMatches());
         assertEquals(50.0, snapshot.exactMatchRatePercentage());
+        assertEquals(1, snapshot.mismatchTracesPersisted());
     }
 }

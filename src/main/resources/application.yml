@@ -19,6 +19,11 @@ inference:
   shadow-max-concurrency: ${SHADOW_MAX_CONCURRENCY:32}
   shadow-queue-capacity: ${SHADOW_QUEUE_CAPACITY:128}
 
+shadow:
+  # Initial mirror rate; change at runtime via PUT /config.
+  routing-percentage: ${SHADOW_ROUTING_PERCENTAGE:100}
+  sqlite-path: ${SHADOW_SQLITE_PATH:./data/shadow-mismatches.db}
+
 logging:
   level:
     com.example.shadowrouter: INFO

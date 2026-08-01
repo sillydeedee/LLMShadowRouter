@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -37,6 +38,9 @@ class ShadowEvaluationServiceTest {
     @Mock
     private InferenceClient inferenceClient;
 
+    @Mock
+    private MismatchTraceService mismatchTraceService;
+
     private ExecutorService executor;
     private ShadowMetrics metrics;
     private ShadowEvaluationService service;
@@ -58,6 +62,7 @@ class ShadowEvaluationServiceTest {
                 inferenceClient,
                 properties,
                 new OutputComparator(new ObjectMapper()),
+                mismatchTraceService,
                 metrics,
                 executor);
     }
@@ -88,6 +93,28 @@ class ShadowEvaluationServiceTest {
         assertEquals(1, metrics.snapshot().comparisonsEvaluated());
         assertEquals(1, metrics.snapshot().exactActionMatches());
         assertEquals(100.0, metrics.snapshot().exactMatchRatePercentage());
+        verify(mismatchTraceService, never()).recordMismatchAsync(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void persistsMismatchWhenActionsDiffer() throws Exception {
+        ObjectNode payload = TestPayloads.chatPayload("hello");
+
+        when(inferenceClient.chatCompletion(any(), eq("candidate-model"), any()))
+                .thenReturn(new InferenceResult(200, TestPayloads.openaiCompletion("abort")));
+
+        CompletableFuture<InferenceResult> primaryFuture = new CompletableFuture<>();
+        assertTrue(service.submitEvaluation("req-mismatch", payload, primaryFuture));
+        primaryFuture.complete(new InferenceResult(200, TestPayloads.openaiCompletion("retry")));
+
+        verify(mismatchTraceService, timeout(5_000)).recordMismatchAsync(
+                eq("req-mismatch"),
+                any(),
+                any(),
+                any(),
+                eq("retry"),
+                eq("abort"));
+        assertEquals(0, metrics.snapshot().exactActionMatches());
     }
 
     @Test
@@ -128,12 +155,13 @@ class ShadowEvaluationServiceTest {
         primaryFuture.completeExceptionally(new IOException("primary failed"));
 
         assertTrue(candidateStarted.await(5, TimeUnit.SECONDS));
-        // Give the worker a moment to finish without recording a comparison.
         Thread.sleep(200);
 
         assertEquals(0, metrics.snapshot().comparisonsEvaluated());
         verify(inferenceClient).chatCompletion(any(), eq("candidate-model"), any());
         verify(inferenceClient, never()).chatCompletion(any(), eq("primary-model"), any());
+        verify(mismatchTraceService, never())
+                .recordMismatchAsync(any(), any(), any(), any(), any(), any());
     }
 
     private void awaitComparisons(int expected) throws InterruptedException {
